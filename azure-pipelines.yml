@@ -1,0 +1,68 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  buildConfiguration: 'Release'
+  imageName: 'your-image-name'   # Replace with your image name
+  containerRegistry: 'youracr.azurecr.io'  # Replace with your ACR login server
+  containerRegistryUsername: '$(ACR_USERNAME)'  # Use Azure DevOps secrets
+  containerRegistryPassword: '$(ACR_PASSWORD)'  # Use Azure DevOps secrets
+  kubernetesNamespace: 'default'  # Replace with your Kubernetes namespace
+  kubernetesServiceAccount: 'default'  # Replace with your Kubernetes service account
+
+steps:
+- task: UseDotNet@2
+  inputs:
+    packageType: 'sdk'
+    version: '6.x'  # Specify your .NET Core SDK version
+
+- script: |
+    dotnet build --configuration $(buildConfiguration)
+  displayName: 'Build project'
+
+- script: |
+    dotnet test --no-build --verbosity normal
+  displayName: 'Run tests'
+
+- script: |
+    docker build -t $(containerRegistry)/$(imageName):$(Build.BuildId) .
+  displayName: 'Build Docker image'
+
+- script: |
+    echo $(containerRegistryPassword) | docker login $(containerRegistry) -u $(containerRegistryUsername) --password-stdin
+  displayName: 'Docker login to ACR'
+
+- script: |
+    docker push $(containerRegistry)/$(imageName):$(Build.BuildId)
+  displayName: 'Push Docker image to ACR'
+
+- task: Kubernetes@1
+  inputs:
+    connectionType: 'Azure Resource Manager'
+    azureSubscription: '<Your Azure Subscription>'
+    azureResourceGroup: '<Your Resource Group>'
+    kubernetesCluster: '<Your AKS Cluster>'
+    namespace: $(kubernetesNamespace)
+    command: apply
+    useConfigurationFile: true
+    configuration: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: dummy-app
+        namespace: $(kubernetesNamespace)
+      spec:
+        containers:
+        - name: dummy-app-container
+          image: $(containerRegistry)/$(imageName):$(Build.BuildId)
+          ports:
+          - containerPort: 80
+    secretType: 'dockerRegistry'
+    secretName: 'acr-auth'
+    dockerRegistryServiceConnection: '<Your Docker Registry Service Connection>'
+  displayName: 'Deploy to AKS'
